@@ -1,112 +1,84 @@
 (without K8S Stage)
 pipeline {
-    agent any
-    tools {
-        jdk 'jdk17'
-        nodejs 'node23'
+  agent any
+  tools { jdk 'jdk17'; nodejs 'node18' }
+  environment {
+    SCANNER_HOME = tool 'sonar-scanner'
+    DOCKER_IMAGE = 'sukhbir25/bms:${GIT_COMMIT}'
+    DOCKER_CRED = 'dockerhub-creds'
+    SONAR_CRED = 'sonar-token'
+    AWS_CRED = 'aws-creds'
+    EKS_CLUSTER = 'sukhbir_bms_eks_cluster'    // optional
+    AWS_REGION = 'us-east-1'
+  }
+  stages {
+    stage('Clean') { steps { cleanWs() } }
+    stage('Checkout') { steps { checkout scm } }
+    stage('SonarQube Analysis') {
+      steps {
+        withCredentials([string(credentialsId: env.SONAR_CRED, variable: 'SONAR_TOKEN')]) {
+          withSonarQubeEnv('sonar-server') {
+            sh "${SCANNER_HOME}/bin/sonar-scanner -Dsonar.login=${SONAR_TOKEN} -Dsonar.projectKey=BMS -Dsonar.sources=."
+          }
+        }
+      }
     }
-    environment {
-        SCANNER_HOME = tool 'sonar-scanner'
+    stage('Wait Quality Gate') {
+      steps {
+        script {
+          // note: requires "Wait for Quality Gate" plugin
+          def qg = waitForQualityGate()
+          if (qg.status != 'OK') {
+            echo "Quality gate: ${qg.status}"
+            // optionally: unstable or fail
+            currentBuild.result = 'UNSTABLE'
+          }
+        }
+      }
     }
-    stages {
-        stage('Clean Workspace') {
-            steps {
-                cleanWs()
-            }
-        }
-        stage('Checkout from Git') {
-            steps {
-                git branch: 'main', url: 'https://github.com/akshu20791/Book-My-Show.git'
-                sh 'ls -la'  // Verify files after checkout
-            }
-        }
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sonar-server') {
-                    sh ''' 
-                    $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=BMS \
-                    -Dsonar.projectKey=BMS 
-                    '''
-                }
-            }
-        }
-        stage('Quality Gate') {
-            steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
-                }
-            }
-        }
-        stage('Install Dependencies') {
-            steps {
-                sh '''
-                cd bookmyshow-app
-                ls -la  # Verify package.json exists
-                if [ -f package.json ]; then
-                    rm -rf node_modules package-lock.json  # Remove old dependencies
-                    npm install  # Install fresh dependencies
-                else
-                    echo "Error: package.json not found in bookmyshow-app!"
-                    exit 1
-                fi
-                '''
-            }
-        }
-        stage('OWASP FS Scan') {
-            steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-            }
-        }
-        stage('Trivy FS Scan') {
-            steps {
-                sh 'trivy fs . > trivyfs.txt'
-            }
-        }
-        stage('Docker Build & Push') {
-            steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
-                        sh ''' 
-                        echo "Building Docker image..."
-                        docker build --no-cache -t kastrov/bms:latest -f bookmyshow-app/Dockerfile bookmyshow-app
-
-                        echo "Pushing Docker image to registry..."
-                        docker push kastrov/bms:latest
-                        '''
-                    }
-                }
-            }
-        }
-        stage('Deploy to Container') {
-            steps {
-                sh ''' 
-                echo "Stopping and removing old container..."
-                docker stop bms || true
-                docker rm bms || true
-
-                echo "Running new container on port 3000..."
-                docker run -d --restart=always --name bms -p 3000:3000 kastrov/bms:latest
-
-                echo "Checking running containers..."
-                docker ps -a
-
-                echo "Fetching logs..."
-                sleep 5  # Give time for the app to start
-                docker logs bms
-                '''
-            }
-        }
+    stage('Install deps & Test') {
+      steps {
+        sh '''
+          cd bookmyshow-app || true
+          npm ci
+          npm test || true
+        '''
+      }
     }
-    post {
-        always {
-            emailext attachLog: true,
-                subject: "'${currentBuild.result}'",
-                body: "Project: ${env.JOB_NAME}<br/>" +
-                      "Build Number: ${env.BUILD_NUMBER}<br/>" +
-                      "URL: ${env.BUILD_URL}<br/>",
-                to: 'kastrokiran@gmail.com',
-                attachmentsPattern: 'trivyfs.txt,trivyimage.txt'
-        }
+    stage('Security Scans (OWASP / Trivy)') {
+      steps {
+        sh '''
+          # example trivy (if trivy installed on agent)
+          trivy fs --exit-code 1 --severity CRITICAL,HIGH . || true
+        '''
+      }
     }
+    stage('Docker Build & Push') {
+      steps {
+        script {
+          withDockerRegistry(credentialsId: env.DOCKER_CRED, url: '') {
+            sh '''
+              docker build -t ${DOCKER_IMAGE} -f bookmyshow-app/Dockerfile bookmyshow-app
+              docker push ${DOCKER_IMAGE}
+            '''
+          }
+        }
+      }
+    }
+    stage('Deploy (Docker)') {
+      steps {
+        sh '''
+          docker stop bms || true
+          docker rm bms || true
+          docker run -d --name bms -p 3000:3000 ${DOCKER_IMAGE}
+        '''
+      }
+    }
+  }
+  post {
+    always {
+      emailext attachLog: true, subject: "Build ${currentBuild.fullDisplayName}: ${currentBuild.currentResult}", body: "View build: ${env.BUILD_URL}", to: 'sukhbir2506@outlook.com'
+    }
+    failure { echo "Build failed" }
+  }
 }
