@@ -1,7 +1,7 @@
 (without K8S Stage)
 pipeline {
   agent any
-  tools { jdk 'jdk17'; nodejs 'node18' }
+  tools { jdk 'jdk17'; nodejs 'node24' }
   environment {
     SCANNER_HOME = tool 'sonar-scanner'
     DOCKER_IMAGE = 'sukhbir25/bms:${GIT_COMMIT}'
@@ -16,7 +16,7 @@ pipeline {
     stage('Checkout') { steps { checkout scm } }
     stage('SonarQube Analysis') {
       steps {
-        withCredentials([string(credentialsId: env.SONAR_CRED, variable: 'SONAR_TOKEN')]) {
+        withCredentials([string(credentialsId: env.SONAR_CRED, variable: 'Sonar-token')]) {
           withSonarQubeEnv('sonar-server') {
             sh "${SCANNER_HOME}/bin/sonar-scanner -Dsonar.login=${SONAR_TOKEN} -Dsonar.projectKey=BMS -Dsonar.sources=."
           }
