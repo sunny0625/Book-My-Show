@@ -18,7 +18,7 @@ pipeline {
       steps {
         withCredentials([string(credentialsId: env.SONAR_CRED, variable: 'Sonar-token')]) {
           withSonarQubeEnv('sonar-server') {
-            sh "${SCANNER_HOME}/bin/sonar-scanner -Dsonar.login=${SONAR_TOKEN} -Dsonar.projectKey=BMS -Dsonar.sources=."
+            sh "${SCANNER_HOME}/bin/sonar-scanner -Dsonar.login=${Sonar-token} -Dsonar.projectKey=BMS -Dsonar.sources=."
           }
         }
       }
